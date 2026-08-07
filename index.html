@@ -274,7 +274,7 @@
   const stopsList = document.getElementById("stopsList");
   const guidesList = document.getElementById("guidesList");
 
-  let activeKey = VEHICLES[0].key;
+  let activeKey = ALL_KEY;
   let isOpenCached = null;
   let sidePanelOpen = false;
   let panelMode = "stops"; // "stops" | "guides"
@@ -308,6 +308,11 @@
   // ---------- pills ----------
   function buildPills() {
     pillsEl.innerHTML = "";
+    const allBtn = document.createElement("button");
+    allBtn.innerHTML = `<span class="dot" style="background:#ffffff"></span>All vehicles`;
+    if (activeKey === ALL_KEY) allBtn.classList.add("active");
+    allBtn.addEventListener("click", () => selectVehicle(ALL_KEY));
+    pillsEl.appendChild(allBtn);
     VEHICLES.forEach(v => {
       const btn = document.createElement("button");
       btn.innerHTML = `<span class="dot" style="background:${v.color}"></span>${v.name}`;
@@ -315,17 +320,12 @@
       btn.addEventListener("click", () => selectVehicle(v.key));
       pillsEl.appendChild(btn);
     });
-    const allBtn = document.createElement("button");
-    allBtn.innerHTML = `<span class="dot" style="background:#ffffff"></span>All vehicles`;
-    if (activeKey === ALL_KEY) allBtn.classList.add("active");
-    allBtn.addEventListener("click", () => selectVehicle(ALL_KEY));
-    pillsEl.appendChild(allBtn);
   }
 
   function selectVehicle(key) {
     activeKey = key;
     [...pillsEl.children].forEach((btn, idx) => {
-      const k = idx < VEHICLES.length ? VEHICLES[idx].key : ALL_KEY;
+      const k = idx === 0 ? ALL_KEY : VEHICLES[idx - 1].key;
       btn.classList.toggle("active", k === key);
     });
     updateMapVisibility();
@@ -352,10 +352,10 @@
     } else if (sidePanelOpen && panelMode === "guides") {
       sidePanelHint.textContent = "Vehicle, guide and tour time only — no client details ever load into this page.";
       sidePanelTitle.textContent = "Guides today";
-      refreshGuides();
-      if (!guidesPollTimer) guidesPollTimer = setInterval(refreshGuides, GUIDES_POLL_MS);
+      // guide data is kept fresh in the background (see startPolling), so opening
+      // the panel just renders whatever's already cached — no extra fetch needed
+      renderGuidesList();
     }
-    if (!sidePanelOpen && guidesPollTimer) { clearInterval(guidesPollTimer); guidesPollTimer = null; }
     setTimeout(() => map.invalidateSize(), 220);
   }
 
@@ -400,12 +400,39 @@
     const idle = parkedDurationMs(s);
     return idle == null ? "" : ` · Parked ${formatDuration(idle)}`;
   }
-  // Keeps each vehicle's on-map name bubble showing "Parked Xm" once it's been still a while
+  // Maps our internal vehicle key to the label the sanitized guide feed uses for it
+  function vehicleLabelForKey(key) {
+    const m = key.match(/^jeep(\d)$/);
+    if (m) return "Jeep " + m[1];
+    if (key === "avanza") return "Avanza 240";
+    return null;
+  }
+  // Picks the guide currently (or most recently) assigned to a vehicle from the
+  // sanitized guide feed — no client data involved, just vehicle/guide/time.
+  function currentGuideForVehicle(v) {
+    if (!guidesCache || !guidesCache.length) return null;
+    const label = vehicleLabelForKey(v.key);
+    if (!label) return null;
+    const rows = guidesCache.filter(r => r.vehicle === label && r.guide);
+    if (!rows.length) return null;
+    const now = Date.now();
+    const started = rows.filter(r => typeof r.startMs === "number" && r.startMs <= now)
+      .sort((a, b) => b.startMs - a.startMs);
+    if (started.length) return started[0].guide;
+    const upcoming = rows.slice().sort((a, b) => (a.startMs || 0) - (b.startMs || 0));
+    return upcoming[0] ? upcoming[0].guide : null;
+  }
+  // Keeps each vehicle's on-map name bubble showing the assigned guide and, once
+  // it's been still a while, "Parked Xm" — everything a guide needs at a glance.
   function updateVehicleLabel(v) {
     const s = state[v.key];
     if (!s.marker) return;
     const idle = parkedDurationMs(s);
-    s.marker.setTooltipContent(idle == null ? v.name : `${v.name} · Parked ${formatDuration(idle)}`);
+    const guide = currentGuideForVehicle(v);
+    let label = v.name;
+    if (guide) label += ` · ${guide}`;
+    if (idle != null) label += ` · Parked ${formatDuration(idle)}`;
+    s.marker.setTooltipContent(label);
   }
   function nextBoundaryLabel(parts, open) {
     const minutesNow = parts.hour * 60 + parts.minute;
@@ -501,7 +528,8 @@
         s.lastMoveTime = fixTime;
       }
       updateVehicleLabel(v);
-      s.marker.bindPopup(`<b>${v.name}</b><br>As of ${formatTime(fixTime)}${d.batteryLevel != null ? " · " + d.batteryLevel + "% battery" : ""}${parkedSuffix(s)}`);
+      const guideNow = currentGuideForVehicle(v);
+      s.marker.bindPopup(`<b>${v.name}</b>${guideNow ? " · " + guideNow : ""}<br>As of ${formatTime(fixTime)}${d.batteryLevel != null ? " · " + d.batteryLevel + "% battery" : ""}${parkedSuffix(s)}`);
 
       // live 90-second tail — every fix, no movement filter, so the path hugs the actual street.
       // it's a sliding window: points older than RECENT_TRAIL_MS drop off on every redraw, so the
@@ -558,10 +586,17 @@
       // between polls rather than only jumping when new data arrives
       trimTimer = setInterval(() => VEHICLES.forEach(v => { redrawRecentTrail(v); updateVehicleLabel(v); }), 5000);
     }
+    if (!guidesPollTimer) {
+      // runs regardless of whether the "Guides today" panel is open, so guide
+      // names are already on the map pins the moment a guide looks at them
+      refreshGuides();
+      guidesPollTimer = setInterval(refreshGuides, GUIDES_POLL_MS);
+    }
   }
   function stopPolling() {
     if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
     if (trimTimer) { clearInterval(trimTimer); trimTimer = null; }
+    if (guidesPollTimer) { clearInterval(guidesPollTimer); guidesPollTimer = null; }
   }
 
   // ---------- map visibility per selection ----------
@@ -635,7 +670,7 @@
 
   async function refreshGuides() {
     if (!GUIDE_API_URL) {
-      guidesList.innerHTML = `<div class="empty-stops">Guide schedule isn't connected yet.</div>`;
+      renderGuidesList("Guide schedule isn't connected yet.");
       return;
     }
     try {
@@ -645,15 +680,20 @@
       if (rows && rows.error) throw new Error(rows.error);
       guidesCache = Array.isArray(rows) ? rows : [];
       renderGuidesList();
+      // refresh every pin's bubble now that we know who's driving what
+      VEHICLES.forEach(updateVehicleLabel);
     } catch (e) {
       if (!guidesCache) {
-        guidesList.innerHTML = `<div class="empty-stops">Couldn't load today's guide schedule right now.</div>`;
+        renderGuidesList("Couldn't load today's guide schedule right now.");
       }
     }
   }
 
-  function renderGuidesList() {
-    if (panelMode !== "guides") return;
+  function renderGuidesList(message) {
+    if (message) {
+      guidesList.innerHTML = `<div class="empty-stops">${message}</div>`;
+      return;
+    }
     const rows = guidesCache || [];
     if (!rows.length) {
       guidesList.innerHTML = `<div class="empty-stops">No tours found on today's calendar.</div>`;
