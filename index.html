@@ -249,6 +249,8 @@
   const MOVE_THRESHOLD_M = 40;        // meters of movement before we log a new "stops today" point
   const RECENT_TRAIL_MS = 90 * 1000;  // how much of the live path tail to keep on the map
   const GEOCODE_MIN_GAP_MS = 1100;    // be polite to the free geocoder
+  const MOTION_THRESHOLD_M = 20;      // meters of movement (between consecutive fixes) that counts as "moved"
+  const PARKED_MIN_TO_SHOW = 2;       // minutes stationary before the "Parked" label appears on the pin
 
   const pillsEl = document.getElementById("vehiclePills");
   const lockEl = document.getElementById("lockScreen");
@@ -271,7 +273,7 @@
   // per-vehicle in-memory state (resets on page reload)
   const state = {};
   VEHICLES.forEach(v => {
-    state[v.key] = { marker: null, trail: [], lastFix: null, recentTrail: [], recentPolyline: null };
+    state[v.key] = { marker: null, trail: [], lastFix: null, recentTrail: [], recentPolyline: null, lastMoveTime: null };
   });
 
   // ---------- map setup ----------
@@ -346,6 +348,28 @@
   }
   function formatTime(date) {
     return new Intl.DateTimeFormat("en-US", { timeZone: TIMEZONE, hour: "numeric", minute: "2-digit", hour12: true }).format(date);
+  }
+  function formatDuration(ms) {
+    const totalMin = Math.floor(ms / 60000);
+    if (totalMin < 60) return `${totalMin}m`;
+    return `${Math.floor(totalMin / 60)}h ${totalMin % 60}m`;
+  }
+  // How long a vehicle has been stationary, or null if it's still within the "just moved" window
+  function parkedDurationMs(s) {
+    if (!s.lastMoveTime) return null;
+    const idle = Date.now() - s.lastMoveTime.getTime();
+    return idle >= PARKED_MIN_TO_SHOW * 60 * 1000 ? idle : null;
+  }
+  function parkedSuffix(s) {
+    const idle = parkedDurationMs(s);
+    return idle == null ? "" : ` · Parked ${formatDuration(idle)}`;
+  }
+  // Keeps each vehicle's on-map name bubble showing "Parked Xm" once it's been still a while
+  function updateVehicleLabel(v) {
+    const s = state[v.key];
+    if (!s.marker) return;
+    const idle = parkedDurationMs(s);
+    s.marker.setTooltipContent(idle == null ? v.name : `${v.name} · Parked ${formatDuration(idle)}`);
   }
   function nextBoundaryLabel(parts, open) {
     const minutesNow = parts.hour * 60 + parts.minute;
@@ -425,6 +449,7 @@
       const fixTime = d.lastUpdated ? new Date(d.lastUpdated) : new Date();
       const s = state[v.key];
       const isFirstFix = !s.marker;
+      const prevRawFix = s.lastFix;
 
       if (!s.marker) {
         s.marker = L.marker([lat, lng], { icon: pinIcon(v.color) }).addTo(map);
@@ -432,8 +457,15 @@
       } else {
         s.marker.setLatLng([lat, lng]);
       }
-      s.marker.bindPopup(`<b>${v.name}</b><br>As of ${formatTime(fixTime)}${d.batteryLevel != null ? " · " + d.batteryLevel + "% battery" : ""}`);
       s.lastFix = { lat, lng, time: fixTime, battery: d.batteryLevel };
+
+      // "has it moved" tracking: lastMoveTime only advances when the vehicle actually
+      // covers real distance between fixes — small GPS jitter while parked won't reset it.
+      if (!prevRawFix || distMeters(prevRawFix, { lat, lng }) >= MOTION_THRESHOLD_M) {
+        s.lastMoveTime = fixTime;
+      }
+      updateVehicleLabel(v);
+      s.marker.bindPopup(`<b>${v.name}</b><br>As of ${formatTime(fixTime)}${d.batteryLevel != null ? " · " + d.batteryLevel + "% battery" : ""}${parkedSuffix(s)}`);
 
       // live 90-second tail — every fix, no movement filter, so the path hugs the actual street.
       // it's a sliding window: points older than RECENT_TRAIL_MS drop off on every redraw, so the
@@ -486,8 +518,9 @@
       pollTimer = setInterval(refreshAll, POLL_MS);
     }
     if (!trimTimer) {
-      // keeps the live 90s tail shrinking smoothly between polls, not just when new data arrives
-      trimTimer = setInterval(() => VEHICLES.forEach(redrawRecentTrail), 5000);
+      // keeps the live 90s tail shrinking, and the "Parked Xm" labels ticking up, smoothly
+      // between polls rather than only jumping when new data arrives
+      trimTimer = setInterval(() => VEHICLES.forEach(v => { redrawRecentTrail(v); updateVehicleLabel(v); }), 5000);
     }
   }
   function stopPolling() {
