@@ -205,6 +205,7 @@
   <div class="toolbar">
     <nav class="pills" id="vehiclePills"></nav>
     <div class="toolbar-right">
+      <button class="ghost-btn" id="guidesToggle">Guides today</button>
       <button class="ghost-btn" id="stopsToggle">Stops today</button>
     </div>
   </div>
@@ -226,8 +227,9 @@
     </div>
     <aside class="side-panel hidden" id="sidePanel">
       <h3 id="sidePanelTitle">Stops today</h3>
-      <div class="hint">Builds live while this page stays open — it can't show stops from before it was opened.</div>
+      <div class="hint" id="sidePanelHint">Builds live while this page stays open — it can't show stops from before it was opened.</div>
       <div class="stops-list" id="stopsList"></div>
+      <div class="stops-list" id="guidesList" style="display:none;"></div>
     </aside>
   </main>
 
@@ -252,21 +254,34 @@
   const MOTION_THRESHOLD_M = 20;      // meters of movement (between consecutive fixes) that counts as "moved"
   const PARKED_MIN_TO_SHOW = 2;       // minutes stationary before the "Parked" label appears on the pin
 
+  // Sanitized guide-schedule feed (Google Apps Script Web App). It returns ONLY
+  // { vehicle, guide, time } per booking — never client names or any other
+  // reservation details — so this page never receives that data at all.
+  // Paste the deployed "/exec" Web App URL here once it's ready.
+  const GUIDE_API_URL = "";
+  const GUIDES_POLL_MS = 60 * 1000;
+
   const pillsEl = document.getElementById("vehiclePills");
   const lockEl = document.getElementById("lockScreen");
   const countdownEl = document.getElementById("countdown");
   const clockTimeEl = document.getElementById("clockTime");
   const clockStatusEl = document.getElementById("clockStatus");
   const stopsToggle = document.getElementById("stopsToggle");
+  const guidesToggle = document.getElementById("guidesToggle");
   const sidePanel = document.getElementById("sidePanel");
   const sidePanelTitle = document.getElementById("sidePanelTitle");
+  const sidePanelHint = document.getElementById("sidePanelHint");
   const stopsList = document.getElementById("stopsList");
+  const guidesList = document.getElementById("guidesList");
 
   let activeKey = VEHICLES[0].key;
   let isOpenCached = null;
   let sidePanelOpen = false;
+  let panelMode = "stops"; // "stops" | "guides"
   let pollTimer = null;
   let trimTimer = null;
+  let guidesPollTimer = null;
+  let guidesCache = null;
   let geocodeQueue = Promise.resolve();
   let lastGeocodeAt = 0;
 
@@ -318,13 +333,34 @@
     fitToActive();
   }
 
-  stopsToggle.addEventListener("click", () => {
-    sidePanelOpen = !sidePanelOpen;
+  function openPanel(mode) {
+    if (sidePanelOpen && panelMode === mode) {
+      sidePanelOpen = false;
+    } else {
+      sidePanelOpen = true;
+      panelMode = mode;
+    }
     sidePanel.classList.toggle("hidden", !sidePanelOpen);
-    stopsToggle.classList.toggle("on", sidePanelOpen);
-    renderStopsList();
+    stopsToggle.classList.toggle("on", sidePanelOpen && panelMode === "stops");
+    guidesToggle.classList.toggle("on", sidePanelOpen && panelMode === "guides");
+    stopsList.style.display = (sidePanelOpen && panelMode === "stops") ? "" : "none";
+    guidesList.style.display = (sidePanelOpen && panelMode === "guides") ? "" : "none";
+
+    if (sidePanelOpen && panelMode === "stops") {
+      sidePanelHint.textContent = "Builds live while this page stays open — it can't show stops from before it was opened.";
+      renderStopsList();
+    } else if (sidePanelOpen && panelMode === "guides") {
+      sidePanelHint.textContent = "Vehicle, guide and tour time only — no client details ever load into this page.";
+      sidePanelTitle.textContent = "Guides today";
+      refreshGuides();
+      if (!guidesPollTimer) guidesPollTimer = setInterval(refreshGuides, GUIDES_POLL_MS);
+    }
+    if (!sidePanelOpen && guidesPollTimer) { clearInterval(guidesPollTimer); guidesPollTimer = null; }
     setTimeout(() => map.invalidateSize(), 220);
-  });
+  }
+
+  stopsToggle.addEventListener("click", () => openPanel("stops"));
+  guidesToggle.addEventListener("click", () => openPanel("guides"));
 
   // ---------- time / lock window ----------
   function getCancunParts() {
@@ -553,7 +589,7 @@
 
   // ---------- stops side panel ----------
   function renderStopsList() {
-    if (!sidePanelOpen) return;
+    if (!sidePanelOpen || panelMode !== "stops") return;
     const keys = activeKey === ALL_KEY ? VEHICLES.map(v => v.key) : [activeKey];
     sidePanelTitle.textContent = activeKey === ALL_KEY ? "Stops today · all vehicles" : `Stops today · ${VEHICLES.find(v => v.key === activeKey).name}`;
 
@@ -577,6 +613,61 @@
         <div class="meta">
           <div class="t">${activeKey === ALL_KEY ? row.v.name + " · " : ""}${row.isFirstForVehicle ? "Departed " : ""}${formatTime(row.p.time)}</div>
           <div class="a">${row.p.label || "Locating…"}</div>
+        </div>
+      </div>
+    `).join("");
+  }
+
+  // ---------- guides today (sanitized, no client data) ----------
+  function vehicleDotColor(label) {
+    if (!label) return "#8a8a8e";
+    const m = label.match(/^Jeep (\d)$/);
+    if (m) {
+      const v = VEHICLES.find(x => x.key === "jeep" + m[1]);
+      if (v) return v.color;
+    }
+    if (/avanza/i.test(label)) {
+      const v = VEHICLES.find(x => x.key === "avanza");
+      if (v) return v.color;
+    }
+    return "#8a8a8e";
+  }
+
+  async function refreshGuides() {
+    if (!GUIDE_API_URL) {
+      guidesList.innerHTML = `<div class="empty-stops">Guide schedule isn't connected yet.</div>`;
+      return;
+    }
+    try {
+      const r = await fetch(GUIDE_API_URL, { cache: "no-store" });
+      if (!r.ok) throw new Error("bad status " + r.status);
+      const rows = await r.json();
+      if (rows && rows.error) throw new Error(rows.error);
+      guidesCache = Array.isArray(rows) ? rows : [];
+      renderGuidesList();
+    } catch (e) {
+      if (!guidesCache) {
+        guidesList.innerHTML = `<div class="empty-stops">Couldn't load today's guide schedule right now.</div>`;
+      }
+    }
+  }
+
+  function renderGuidesList() {
+    if (panelMode !== "guides") return;
+    const rows = guidesCache || [];
+    if (!rows.length) {
+      guidesList.innerHTML = `<div class="empty-stops">No tours found on today's calendar.</div>`;
+      return;
+    }
+    guidesList.innerHTML = rows.map((row, i) => `
+      <div class="stop-item">
+        <div class="rail">
+          <div class="node" style="background:${vehicleDotColor(row.vehicle)}"></div>
+          ${i < rows.length - 1 ? '<div class="line"></div>' : ''}
+        </div>
+        <div class="meta">
+          <div class="t">${row.time || ""} · ${row.vehicle || "Vehicle TBD"}</div>
+          <div class="a">${row.guide ? "Guide: " + row.guide : "Guide not specified on calendar"}</div>
         </div>
       </div>
     `).join("");
