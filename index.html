@@ -179,6 +179,18 @@
 
   .window-note{ text-align:center; color: var(--text-dim); font-size: 12px; margin-top: 14px; }
 
+  .app.hidden{ display:none; }
+  .sunday-screen{
+    position:fixed; inset:0; z-index:1000;
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
+    gap:18px; padding:32px; text-align:center;
+    background:#150a24;
+  }
+  .sunday-screen.hidden{ display:none; }
+  .sunday-screen .sunset-art{ width:min(320px, 80vw); height:auto; border-radius:16px; box-shadow:0 10px 40px rgba(0,0,0,0.5); }
+  .sunday-screen h2{ margin:0; font-size:24px; font-weight:700; letter-spacing:-0.01em; }
+  .sunday-screen p{ margin:0; color: var(--text-dim); font-size:14px; max-width:320px; line-height:1.6; }
+
   @media (max-width: 760px){
     main{ flex-direction: column; }
     .side-panel{ width:100%; max-height: 220px; }
@@ -190,7 +202,38 @@
 </style>
 </head>
 <body>
-<div class="app">
+<div class="sunday-screen hidden" id="sundayScreen">
+  <svg class="sunset-art" viewBox="0 0 320 200" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="#2a1a4a"/>
+        <stop offset="45%" stop-color="#c1447e"/>
+        <stop offset="75%" stop-color="#ff8a4c"/>
+        <stop offset="100%" stop-color="#ffce7a"/>
+      </linearGradient>
+    </defs>
+    <rect x="0" y="0" width="320" height="200" fill="url(#sky)"/>
+    <circle cx="160" cy="130" r="34" fill="#ffe27a" opacity="0.95"/>
+    <rect x="0" y="150" width="320" height="50" fill="#150a24"/>
+    <g transform="translate(38,95)">
+      <path d="M0 55 C -2 30, 2 10, 0 0" stroke="#150a24" stroke-width="4" fill="none" stroke-linecap="round"/>
+      <path d="M0 2 C -18 -8, -30 -2, -34 6" stroke="#150a24" stroke-width="4" fill="none" stroke-linecap="round"/>
+      <path d="M0 2 C 16 -10, 28 -6, 32 2" stroke="#150a24" stroke-width="4" fill="none" stroke-linecap="round"/>
+      <path d="M0 2 C -10 -14, -8 -22, -2 -28" stroke="#150a24" stroke-width="4" fill="none" stroke-linecap="round"/>
+      <path d="M0 2 C 8 -16, 6 -24, 0 -30" stroke="#150a24" stroke-width="4" fill="none" stroke-linecap="round"/>
+    </g>
+    <g transform="translate(190,148)" fill="#150a24">
+      <rect x="0" y="-22" width="58" height="20" rx="3"/>
+      <rect x="8" y="-34" width="34" height="16" rx="2"/>
+      <circle cx="12" cy="-2" r="9"/>
+      <circle cx="46" cy="-2" r="9"/>
+      <rect x="-4" y="-16" width="6" height="10" rx="1"/>
+    </g>
+  </svg>
+  <h2>Day off 🌅</h2>
+  <p>The jeeps are parked, watching the sunset. No tours today — back on the road tomorrow at 8:00 AM.</p>
+</div>
+<div class="app" id="app">
   <header>
     <div class="brand">
       <span class="eyebrow">Visit Cozumel</span>
@@ -261,6 +304,7 @@
   const GUIDE_API_URL = "https://script.google.com/macros/s/AKfycbz2QXKxHPjcIwjpRPRmgXnFXRqqdk2jiS4xA9kw2nNM-FbPPY9-v7qUIWNtE3C-FmJUxA/exec";
   const GUIDES_POLL_MS = 60 * 1000;
 
+  function startApp() {
   const pillsEl = document.getElementById("vehiclePills");
   const lockEl = document.getElementById("lockScreen");
   const countdownEl = document.getElementById("countdown");
@@ -717,6 +761,22 @@
   buildPills();
   applyClock(true);
   setInterval(() => applyClock(false), 15000);
+  } // end startApp
+
+  // ---------- Sunday: no tours, no data — just a resting screen ----------
+  function isSundayCancun() {
+    const wd = new Intl.DateTimeFormat("en-US", { timeZone: TIMEZONE, weekday: "short" }).format(new Date());
+    return wd === "Sun";
+  }
+
+  if (isSundayCancun()) {
+    // Nothing below this branch ever runs: no map, no Tracki fetch, no guide-schedule
+    // fetch — the page simply shows the resting screen and stops.
+    document.getElementById("app").classList.add("hidden");
+    document.getElementById("sundayScreen").classList.remove("hidden");
+  } else {
+    startApp();
+  }
 </script>
 </body>
 </html>
