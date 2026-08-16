@@ -287,6 +287,7 @@
     { key: "avanza", name: "Avanza 240", token: "tbge4t53caf3h6t342td2k04t5", color: "#30d158" },
   ];
   const ALL_KEY = "all";
+  const TODAY_KEY = "today";
   const TIMEZONE = "America/Cancun";
   const OPEN_HOUR = 8;    // 8:00 AM
   const CLOSE_HOUR = 16;  // 4:00 PM
@@ -318,7 +319,8 @@
   const stopsList = document.getElementById("stopsList");
   const guidesList = document.getElementById("guidesList");
 
-  let activeKey = ALL_KEY;
+  let activeKey = TODAY_KEY;
+  let todayAutoFitDone = false;
   let isOpenCached = null;
   let sidePanelOpen = false;
   let panelMode = "stops"; // "stops" | "guides"
@@ -352,13 +354,23 @@
   // ---------- pills ----------
   function buildPills() {
     pillsEl.innerHTML = "";
+    const todayBtn = document.createElement("button");
+    todayBtn.dataset.key = TODAY_KEY;
+    todayBtn.innerHTML = `<span class="dot" style="background:#34c759"></span>Today's jeeps`;
+    if (activeKey === TODAY_KEY) todayBtn.classList.add("active");
+    todayBtn.addEventListener("click", () => selectVehicle(TODAY_KEY));
+    pillsEl.appendChild(todayBtn);
+
     const allBtn = document.createElement("button");
+    allBtn.dataset.key = ALL_KEY;
     allBtn.innerHTML = `<span class="dot" style="background:#ffffff"></span>All vehicles`;
     if (activeKey === ALL_KEY) allBtn.classList.add("active");
     allBtn.addEventListener("click", () => selectVehicle(ALL_KEY));
     pillsEl.appendChild(allBtn);
+
     VEHICLES.forEach(v => {
       const btn = document.createElement("button");
+      btn.dataset.key = v.key;
       btn.innerHTML = `<span class="dot" style="background:${v.color}"></span>${v.name}`;
       if (v.key === activeKey) btn.classList.add("active");
       btn.addEventListener("click", () => selectVehicle(v.key));
@@ -368,9 +380,8 @@
 
   function selectVehicle(key) {
     activeKey = key;
-    [...pillsEl.children].forEach((btn, idx) => {
-      const k = idx === 0 ? ALL_KEY : VEHICLES[idx - 1].key;
-      btn.classList.toggle("active", k === key);
+    [...pillsEl.children].forEach(btn => {
+      btn.classList.toggle("active", btn.dataset.key === key);
     });
     updateMapVisibility();
     renderStopsList();
@@ -450,6 +461,21 @@
     if (m) return "Jeep " + m[1];
     if (key === "avanza") return "Avanza 240";
     return null;
+  }
+  // Which vehicles actually have a tour on today's calendar. Before the guide
+  // feed has loaded (guidesCache is null) everything counts as "scheduled" so
+  // the map never blanks out during the first few seconds after opening.
+  function isScheduledToday(v) {
+    if (!guidesCache) return true;
+    const label = vehicleLabelForKey(v.key);
+    if (!label) return false;
+    return guidesCache.some(r => r.vehicle === label);
+  }
+  // Falls back to the whole fleet if nothing is scheduled today, so "Today's
+  // jeeps" never shows an empty map on a no-tour day.
+  function scheduledKeys() {
+    const keys = VEHICLES.filter(isScheduledToday).map(v => v.key);
+    return keys.length ? keys : VEHICLES.map(v => v.key);
   }
   // Picks the guide currently (or most recently) assigned to a vehicle from the
   // sanitized guide feed — no client data involved, just vehicle/guide/time.
@@ -645,9 +671,12 @@
 
   // ---------- map visibility per selection ----------
   function updateMapVisibility() {
+    const activeSet = activeKey === ALL_KEY ? new Set(VEHICLES.map(v => v.key))
+      : activeKey === TODAY_KEY ? new Set(scheduledKeys())
+      : new Set([activeKey]);
     VEHICLES.forEach(v => {
       const s = state[v.key];
-      const show = activeKey === ALL_KEY || activeKey === v.key;
+      const show = activeSet.has(v.key);
       [s.marker, s.recentPolyline].forEach(layer => {
         if (!layer) return;
         if (show && !map.hasLayer(layer)) layer.addTo(map);
@@ -657,8 +686,9 @@
   }
 
   function fitToActive() {
-    if (activeKey === ALL_KEY) {
-      const pts = VEHICLES.map(v => state[v.key].lastFix).filter(Boolean).map(f => [f.lat, f.lng]);
+    if (activeKey === ALL_KEY || activeKey === TODAY_KEY) {
+      const keys = activeKey === ALL_KEY ? VEHICLES.map(v => v.key) : scheduledKeys();
+      const pts = keys.map(k => state[k].lastFix).filter(Boolean).map(f => [f.lat, f.lng]);
       if (pts.length) map.fitBounds(pts, { padding: [50, 50], maxZoom: 15 });
     } else {
       const f = state[activeKey].lastFix;
@@ -669,8 +699,12 @@
   // ---------- stops side panel ----------
   function renderStopsList() {
     if (!sidePanelOpen || panelMode !== "stops") return;
-    const keys = activeKey === ALL_KEY ? VEHICLES.map(v => v.key) : [activeKey];
-    sidePanelTitle.textContent = activeKey === ALL_KEY ? "Stops today · all vehicles" : `Stops today · ${VEHICLES.find(v => v.key === activeKey).name}`;
+    const keys = activeKey === ALL_KEY ? VEHICLES.map(v => v.key)
+      : activeKey === TODAY_KEY ? scheduledKeys()
+      : [activeKey];
+    sidePanelTitle.textContent = activeKey === ALL_KEY ? "Stops today · all vehicles"
+      : activeKey === TODAY_KEY ? "Stops today"
+      : `Stops today · ${VEHICLES.find(v => v.key === activeKey).name}`;
 
     let rows = [];
     keys.forEach(k => {
@@ -726,6 +760,16 @@
       renderGuidesList();
       // refresh every pin's bubble now that we know who's driving what
       VEHICLES.forEach(updateVehicleLabel);
+      // now that we know which vehicles are actually scheduled today, narrow
+      // (or restore) what "Today's jeeps" shows — but only re-center the map
+      // the first time, so it doesn't keep jumping on every 60s poll
+      if (activeKey === TODAY_KEY) {
+        updateMapVisibility();
+        if (!todayAutoFitDone) {
+          fitToActive();
+          todayAutoFitDone = true;
+        }
+      }
     } catch (e) {
       if (!guidesCache) {
         renderGuidesList("Couldn't load today's guide schedule right now.");
