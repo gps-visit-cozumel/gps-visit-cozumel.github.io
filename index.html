@@ -339,9 +339,15 @@
 
   // ---------- map setup ----------
   const map = L.map("map", { zoomControl: true, attributionControl: true }).setView([20.5, -86.95], 12);
-  L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
-    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>',
-    subdomains: "abcd", maxZoom: 20
+  // Esri's free "Dark Gray Canvas" basemap — no API key required (CartoDB's
+  // basemaps.cartocdn.com now demands a paid/registered key, which broke the
+  // map entirely). Base layer + a labels/roads overlay on top of it.
+  L.tileLayer("https://services.arcgisonline.com/arcgis/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}", {
+    attribution: '&copy; <a href="https://www.esri.com">Esri</a>, HERE, Garmin, &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+    maxZoom: 19, maxNativeZoom: 16
+  }).addTo(map);
+  L.tileLayer("https://services.arcgisonline.com/arcgis/rest/services/Canvas/World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}", {
+    maxZoom: 19, maxNativeZoom: 16
   }).addTo(map);
 
   function pinIcon(color) {
